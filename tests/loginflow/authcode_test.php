@@ -31,6 +31,8 @@ use phpunit_util;
  * @group      office365
  * @coversDefaultClass \auth_oidc\loginflow\authcode
  */
+#[\PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses]
+#[\PHPUnit\Framework\Attributes\PreserveGlobalState(false)]
 final class authcode_test extends advanced_testcase {
     /**
      * Set up test environment.
@@ -41,8 +43,22 @@ final class authcode_test extends advanced_testcase {
         parent::setUp();
         $this->resetAfterTest(true);
 
+        // These callback tests complete a real login, including session ID regeneration.
+        session_save_path(make_request_directory());
+        session_start();
+
         auth_plugininfo::enable_plugin('oidc', 1);
         set_config('bindingusernameclaim', 'upn', 'auth_oidc');
+    }
+
+    /**
+     * Release only the physical session started by this isolated test.
+     */
+    protected function tearDown(): void {
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            session_destroy();
+        }
+        parent::tearDown();
     }
 
     /**
@@ -103,17 +119,25 @@ final class authcode_test extends advanced_testcase {
         ]);
 
         $idtoken = new jwt();
-        $idtoken->set_claims([
+        $claims = [
             'sub' => 'sub-' . $user->id,
             'upn' => $tokenupn,
             'preferred_username' => $tokenupn,
-        ]);
+        ];
+        $idtoken->set_claims($claims);
+
+        // get_userinfo decodes the persisted access token during completion.
+        $encode = static fn(string $value): string => rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
+        $header = $encode(json_encode(['typ' => 'JWT', 'alg' => 'HS256']));
+        $payload = $encode(json_encode($claims));
+        $signed = $header . '.' . $payload;
+        $encodedtoken = $signed . '.' . $encode(hash_hmac('sha256', $signed, 'unit-test', true));
 
         $oidcuniqid = 'oidcuniqid-' . $user->id;
         $authparams = ['code' => 'authcode-' . $user->id];
         $tokenparams = [
-            'access_token' => 'access-token',
-            'id_token' => 'id-token',
+            'access_token' => $encodedtoken,
+            'id_token' => $encodedtoken,
             'expires_in' => 3600,
             'resource' => 'resource',
             'scope' => 'scope',
