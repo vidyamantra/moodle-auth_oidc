@@ -126,7 +126,7 @@ final class authcode_test extends advanced_testcase {
         ];
         $idtoken->set_claims($claims);
 
-        // get_userinfo decodes the persisted access token during completion.
+        // The user-info lookup decodes the persisted access token during completion.
         $encode = static fn(string $value): string => rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
         $header = $encode(json_encode(['typ' => 'JWT', 'alg' => 'HS256']));
         $payload = $encode(json_encode($claims));
