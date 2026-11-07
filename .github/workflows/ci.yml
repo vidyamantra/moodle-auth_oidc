@@ -15,7 +15,8 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: [self-hosted, hetzner]
 
     services:
       postgres:
@@ -24,7 +25,7 @@ jobs:
           POSTGRES_USER: 'postgres'
           POSTGRES_HOST_AUTH_METHOD: 'trust'
         ports:
-          - 5432:5432
+          - 5432
         options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 3
 
       mariadb:
@@ -32,7 +33,7 @@ jobs:
         env:
           MYSQL_ALLOW_EMPTY_PASSWORD: "true"
         ports:
-          - 3306:3306
+          - 3306
         options: --health-cmd="mysqladmin ping" --health-interval 10s --health-timeout 5s --health-retries 3
 
     strategy:
@@ -68,6 +69,7 @@ jobs:
           moodle-plugin-ci install --plugin ./plugin --db-host=127.0.0.1
         env:
           DB: ${{ matrix.database }}
+          DB_PORT: ${{ matrix.database == 'pgsql' && job.services.postgres.ports[5432] || job.services.mariadb.ports[3306] }}
           MOODLE_BRANCH: ${{ matrix.moodle-branch }}
           SHELLOPTS: errexit:nounset:xtrace
 
@@ -113,11 +115,38 @@ jobs:
         if: ${{ !cancelled() }}
         run: moodle-plugin-ci behat --profile chrome
 
-      - name: Cleanup after behat
+      - name: Cleanup job-owned browsers
         if: ${{ always() }}
         run: |
-          sudo pkill -f chrome
-          sudo pkill -f chromedriver
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import signal
+
+          tracking = os.environ.get("RUNNER_TRACKING_ID")
+          if not tracking or not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+              raise SystemExit("Job-owned browser cleanup identity is unavailable")
+          marker = ("RUNNER_TRACKING_ID=" + tracking).encode()
+          browsers = {"chrome", "chromedriver", "chrome_crashpad", "chromium", "chromium-browse", "headless_shell"}
+          for process in Path("/proc").iterdir():
+              if not process.name.isascii() or not process.name.isdecimal():
+                  continue
+              descriptor = None
+              try:
+                  if process.stat().st_uid != os.getuid():
+                      continue
+                  descriptor = os.pidfd_open(int(process.name))
+                  if (process / "comm").read_text().strip() not in browsers:
+                      continue
+                  if marker not in (process / "environ").read_bytes().split(b"\0"):
+                      continue
+                  signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+              except (FileNotFoundError, ProcessLookupError, PermissionError):
+                  continue
+              finally:
+                  if descriptor is not None:
+                      os.close(descriptor)
+          PY
 
       - name: Mark cancelled jobs as failed.
         if: ${{ cancelled() }}
